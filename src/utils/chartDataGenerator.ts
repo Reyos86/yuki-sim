@@ -1,4 +1,5 @@
 import type { ChartPoint } from '../data/mockMarketData'
+import { gaussian, random as prngRandom } from './prng'
 
 export type Timeframe = '1m' | '5m' | '15m' | '1h' | '1D'
 
@@ -36,12 +37,6 @@ const TIMEFRAME_DRIFT: Record<Timeframe, number> = {
   '15m': 0.00012,
   '1h': 0.00025,
   '1D': 0.0006,
-}
-
-function gaussian(): number {
-  const u = 1 - Math.random()
-  const v = Math.random()
-  return Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * v)
 }
 
 function alignToInterval(timeSeconds: number, intervalSeconds: number): number {
@@ -88,7 +83,7 @@ function generateTimeframeCandles(
     const time = endTimeSeconds - (candleCount - 1 - i) * intervalSeconds
 
     const moveMagnitude = bodyRange / close
-    const volumeFactor = 0.45 + Math.random() * 0.9 + moveMagnitude * 90
+    const volumeFactor = 0.45 + prngRandom() * 0.9 + moveMagnitude * 90
     const volume = Math.max(1, Math.floor(baseVolume * volumeFactor))
 
     candles.push({
@@ -116,7 +111,7 @@ export function generateAllTimeframeData(
     const count = TIMEFRAME_CANDLE_COUNT[tf]
     const endTime = alignToInterval(sessionStartSeconds, interval)
     const candleVolatility = TIMEFRAME_VOL_FACTOR[tf] * (0.55 + volatilityPersonality)
-    const drift = TIMEFRAME_DRIFT[tf] * (Math.random() < 0.5 ? 1 : -1)
+    const drift = TIMEFRAME_DRIFT[tf] * (prngRandom() < 0.5 ? 1 : -1)
     const baseVolume = Math.max(2000, totalSessionVolume / 220)
     result[tf] = generateTimeframeCandles(
       currentPrice,

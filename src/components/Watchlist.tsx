@@ -1,5 +1,9 @@
 import { useMarket } from '../context/MarketContext'
 
+function formatIndexValue(v: number): string {
+  return v.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+}
+
 export default function Watchlist() {
   const { watchlist, state, selectedSymbol, setSelectedSymbol, affectedSymbols } = useMarket()
 
@@ -12,6 +16,62 @@ export default function Watchlist() {
       <div className="watchlist__table-wrap">
         <table className="data-table watchlist__table">
           <thead>
+            <tr>
+              <th colSpan={4} className="watchlist__section-label">
+                Indices · Options Tradable
+              </th>
+            </tr>
+          </thead>
+          <tbody>
+            {state.indices.map((idx) => {
+              const positive = idx.change >= 0
+              const isSelected = idx.symbol === selectedSymbol
+              return (
+                <tr
+                  key={`idx-${idx.symbol}-${state.tickCount}`}
+                  className={[
+                    'row--index',
+                    isSelected ? 'row--active' : '',
+                  ].filter(Boolean).join(' ')}
+                  onClick={() => setSelectedSymbol(idx.symbol)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' || e.key === ' ') {
+                      e.preventDefault()
+                      setSelectedSymbol(idx.symbol)
+                    }
+                  }}
+                  role="button"
+                  tabIndex={0}
+                  aria-selected={isSelected}
+                  aria-label={`Select ${idx.name}`}
+                >
+                  <td>
+                    <div className="symbol-cell">
+                      <span className="symbol-cell__ticker">
+                        {idx.symbol}
+                        <span className="index-pill" title="Index">IDX</span>
+                      </span>
+                      <span className="symbol-cell__name">{idx.name}</span>
+                    </div>
+                  </td>
+                  <td className={`align-right mono ${positive ? 'positive' : 'negative'}`}>
+                    {formatIndexValue(idx.value)}
+                  </td>
+                  <td className={`align-right mono ${positive ? 'positive' : 'negative'}`}>
+                    {positive ? '+' : ''}{idx.changePct.toFixed(2)}%
+                  </td>
+                  <td className="align-right muted">—</td>
+                </tr>
+              )
+            })}
+          </tbody>
+        </table>
+
+        <table className="data-table watchlist__table">
+          <thead>
+            <tr>
+              <th colSpan={4} className="watchlist__section-label">Stocks</th>
+            </tr>
             <tr>
               <th>Symbol</th>
               <th className="align-right">Last</th>

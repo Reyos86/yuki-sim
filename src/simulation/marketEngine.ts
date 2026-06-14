@@ -10,6 +10,7 @@ import {
   updateLastCandle,
   type Timeframe,
 } from '../utils/chartDataGenerator'
+import { gaussian, random as prngRandom } from '../utils/prng'
 
 export interface SimulatedStock {
   symbol: string
@@ -67,13 +68,15 @@ const SEVERITY_VOL_MULTIPLIER: Record<EventSeverity, number> = {
   Extreme: 3.2,
 }
 
-const MAX_MARKERS_PER_SYMBOL = 8
-
-function gaussian(): number {
-  const u = 1 - Math.random()
-  const v = Math.random()
-  return Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * v)
+const INDEX_CHART_VOLATILITY: Record<string, number> = {
+  PNS: 0.18,
+  TSQ: 0.35,
+  VEX: 0.85,
 }
+
+const INDEX_VOLUME_BASE = 5_000_000
+
+const MAX_MARKERS_PER_SYMBOL = 8
 
 function clamp(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, value))
@@ -172,7 +175,7 @@ function updateStock(stock: SimulatedStock, pctMove: number): SimulatedStock {
   const newPrice = clamp(stock.price * (1 + pctMove), 0.01, 999_999)
   const change = newPrice - stock.openPrice
   const changePct = (change / stock.openPrice) * 100
-  const volumeBump = Math.floor(Math.abs(pctMove) * 50_000 + Math.random() * 8_000)
+  const volumeBump = Math.floor(Math.abs(pctMove) * 50_000 + prngRandom() * 8_000)
 
   return {
     ...stock,
@@ -241,7 +244,7 @@ export function tickMarket(state: MarketState): MarketState {
     -avgIndexMove * 2.8 +
     gaussian() * 0.0012 * volMult +
     drifts.volatilityDrift +
-    (Math.random() < 0.15 ? gaussian() * 0.004 : 0)
+    (prngRandom() < 0.15 ? gaussian() * 0.004 : 0)
 
   const newIndices = state.indices.map((idx) => {
     if (idx.symbol === 'PNS') return updateIndex(idx, pnsOpen, pnsMove)
@@ -280,6 +283,19 @@ export function tickMarket(state: MarketState): MarketState {
     newChartDataBySymbol[stock.symbol] = updateSymbolTimeframes(
       existing,
       stock.price,
+      volumeBump,
+      currentTimeSeconds,
+    )
+  }
+  for (const idx of newIndices) {
+    const existing = newChartDataBySymbol[idx.symbol]
+    if (!existing) continue
+    const prev = state.indices.find((i) => i.symbol === idx.symbol)
+    const pct = prev && prev.value > 0 ? Math.abs(idx.value - prev.value) / prev.value : 0
+    const volumeBump = Math.floor(pct * 4_000_000)
+    newChartDataBySymbol[idx.symbol] = updateSymbolTimeframes(
+      existing,
+      idx.value,
       volumeBump,
       currentTimeSeconds,
     )
@@ -333,6 +349,15 @@ export function createInitialMarketState(
       sessionStartSeconds,
       stock.volume,
       personalityVol,
+    )
+  }
+  for (const idx of indices) {
+    const indexVol = INDEX_CHART_VOLATILITY[idx.symbol] ?? 0.3
+    chartDataBySymbol[idx.symbol] = generateAllTimeframeData(
+      idx.value,
+      sessionStartSeconds,
+      INDEX_VOLUME_BASE,
+      indexVol,
     )
   }
 

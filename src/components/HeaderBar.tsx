@@ -1,3 +1,4 @@
+import { useState } from 'react'
 import { useMarket } from '../context/MarketContext'
 
 function formatChange(change: number, pct: number) {
@@ -16,7 +17,21 @@ function formatMarketTime(date: Date): string {
 }
 
 export default function HeaderBar() {
-  const { state } = useMarket()
+  const { state, seedLabel, shareUrl } = useMarket()
+  const [copied, setCopied] = useState(false)
+
+  function copyShareLink() {
+    if (!shareUrl) return
+    navigator.clipboard.writeText(shareUrl).then(
+      () => {
+        setCopied(true)
+        window.setTimeout(() => setCopied(false), 1600)
+      },
+      () => {
+        setCopied(false)
+      },
+    )
+  }
 
   return (
     <header className="header-bar">
@@ -33,6 +48,16 @@ export default function HeaderBar() {
           <span className="status-dot" />
           Market Open
         </span>
+        <button
+          type="button"
+          className={`seed-pill ${copied ? 'seed-pill--copied' : ''}`}
+          onClick={copyShareLink}
+          title="Copy a shareable link — anyone opening it sees the exact same market"
+        >
+          <span className="seed-pill__label">SEED</span>
+          <span className="seed-pill__value">{seedLabel}</span>
+          <span className="seed-pill__action">{copied ? 'Copied!' : 'Share'}</span>
+        </button>
       </div>
 
       <div className="header-bar__center">
@@ -52,8 +77,8 @@ export default function HeaderBar() {
         {state.indices.map((ticker) => {
           const positive = ticker.change >= 0
           return (
-            <div key={ticker.symbol} className="index-ticker">
-              <span className="index-ticker__symbol">{ticker.symbol}</span>
+            <div key={ticker.symbol} className="index-ticker" title={ticker.name}>
+              <span className="index-ticker__symbol">{ticker.name}</span>
               <span className="index-ticker__value">
                 {ticker.value.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
               </span>

@@ -9,11 +9,16 @@ import {
   type ReactNode,
 } from 'react'
 import { useMarket } from './MarketContext'
+import type { Underlying } from './MarketContext'
 import {
   createInitialPortfolio,
   executeBuy,
+  executeOptionBuy,
+  executeOptionClose,
   executeSell,
   refreshPortfolioWithMarket,
+  type OptionOrderInput,
+  type OptionPosition,
   type OrderResult,
   type OrderSide,
   type Portfolio,
@@ -23,21 +28,25 @@ import {
 interface PortfolioContextValue {
   portfolio: Portfolio
   positions: StockPosition[]
+  optionPositions: OptionPosition[]
   buyStock: (symbol: string, quantity: number) => OrderResult
   sellStock: (symbol: string, quantity: number) => OrderResult
+  buyOption: (order: OptionOrderInput) => OrderResult
+  closeOption: (positionId: string, quantity?: number) => OrderResult
 }
 
 const PortfolioContext = createContext<PortfolioContextValue | null>(null)
 
 export function PortfolioProvider({ children }: { children: ReactNode }) {
-  const { state } = useMarket()
+  const { state, underlyings } = useMarket()
   const [portfolio, setPortfolio] = useState<Portfolio>(createInitialPortfolio)
   const portfolioRef = useRef(portfolio)
   portfolioRef.current = portfolio
 
+  // Use the combined list so option positions on indices re-mark too.
   useEffect(() => {
-    setPortfolio((prev) => refreshPortfolioWithMarket(prev, state.stocks))
-  }, [state.tickCount, state.stocks])
+    setPortfolio((prev) => refreshPortfolioWithMarket(prev, underlyings as Underlying[]))
+  }, [state.tickCount, underlyings])
 
   const buyStock = useCallback(
     (symbol: string, quantity: number): OrderResult => {
@@ -57,14 +66,35 @@ export function PortfolioProvider({ children }: { children: ReactNode }) {
     [state.stocks],
   )
 
+  const buyOption = useCallback(
+    (order: OptionOrderInput): OrderResult => {
+      const outcome = executeOptionBuy(portfolioRef.current, underlyings, order)
+      setPortfolio(outcome.portfolio)
+      return outcome.result
+    },
+    [underlyings],
+  )
+
+  const closeOption = useCallback(
+    (positionId: string, quantity?: number): OrderResult => {
+      const outcome = executeOptionClose(portfolioRef.current, underlyings, positionId, quantity)
+      setPortfolio(outcome.portfolio)
+      return outcome.result
+    },
+    [underlyings],
+  )
+
   const value = useMemo<PortfolioContextValue>(
     () => ({
       portfolio,
       positions: portfolio.positions,
+      optionPositions: portfolio.optionPositions,
       buyStock,
       sellStock,
+      buyOption,
+      closeOption,
     }),
-    [portfolio, buyStock, sellStock],
+    [portfolio, buyStock, sellStock, buyOption, closeOption],
   )
 
   return <PortfolioContext.Provider value={value}>{children}</PortfolioContext.Provider>

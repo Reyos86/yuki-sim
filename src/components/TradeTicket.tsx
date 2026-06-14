@@ -3,18 +3,25 @@ import { useMarket } from '../context/MarketContext'
 import { usePortfolio, type OrderSide } from '../context/PortfolioContext'
 
 export default function TradeTicket() {
-  const { state, selectedSymbol } = useMarket()
+  const { selectedSymbol, selectedUnderlying } = useMarket()
   const { portfolio, buyStock, sellStock } = usePortfolio()
 
   const [side, setSide] = useState<OrderSide>('buy')
   const [quantity, setQuantity] = useState(10)
   const [message, setMessage] = useState<{ text: string; type: 'error' | 'success' } | null>(null)
 
-  const selectedStock = state.stocks.find((s) => s.symbol === selectedSymbol)
-  const marketPrice = selectedStock?.price ?? 0
+  const isIndex = selectedUnderlying?.kind === 'index'
+  const marketPrice = selectedUnderlying?.price ?? 0
   const estValue = marketPrice * quantity
 
   function handlePlaceOrder() {
+    if (isIndex) {
+      setMessage({
+        text: 'Indices are not directly tradable — trade options on them below.',
+        type: 'error',
+      })
+      return
+    }
     const qty = Math.floor(quantity)
     if (qty <= 0) {
       setMessage({ text: 'Enter a valid quantity.', type: 'error' })
@@ -35,11 +42,19 @@ export default function TradeTicket() {
         <span className="panel__meta">{selectedSymbol}</span>
       </div>
 
+      {isIndex && (
+        <div className="trade-ticket__index-banner">
+          <strong>{selectedSymbol}</strong> is an index — shares aren't directly tradable.
+          Use the <em>Options Chain</em> below to buy calls or puts on it.
+        </div>
+      )}
+
       <div className="trade-ticket__sides">
         <button
           type="button"
           className={`side-btn side-btn--buy ${side === 'buy' ? 'side-btn--active' : ''}`}
           onClick={() => { setSide('buy'); setMessage(null) }}
+          disabled={isIndex}
         >
           Buy
         </button>
@@ -47,6 +62,7 @@ export default function TradeTicket() {
           type="button"
           className={`side-btn side-btn--sell ${side === 'sell' ? 'side-btn--active' : ''}`}
           onClick={() => { setSide('sell'); setMessage(null) }}
+          disabled={isIndex}
         >
           Sell
         </button>
@@ -111,8 +127,9 @@ export default function TradeTicket() {
         type="button"
         className={`submit-btn ${side === 'buy' ? 'submit-btn--buy' : 'submit-btn--sell'}`}
         onClick={handlePlaceOrder}
+        disabled={isIndex}
       >
-        Place Order
+        {isIndex ? 'Index — Trade Options Below' : 'Place Order'}
       </button>
 
       <p className="trade-ticket__disclaimer muted">

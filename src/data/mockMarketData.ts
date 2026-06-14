@@ -77,8 +77,8 @@ export const MARKET_DATE = 'Fri, Jun 13, 2026'
 
 export const indexTickers: IndexTicker[] = [
   { symbol: 'PNS', name: 'P&S 5000', value: 5021.37, change: 34.12, changePct: 0.68 },
-  { symbol: 'TSQ', name: 'Tech Sector Index', value: 12847.92, change: -89.44, changePct: -0.69 },
-  { symbol: 'VEX', name: 'Volatility Index', value: 18.24, change: 1.08, changePct: 6.29 },
+  { symbol: 'TSQ', name: 'TSQ Composite', value: 12847.92, change: -89.44, changePct: -0.69 },
+  { symbol: 'VEX', name: 'VEX Volatility', value: 18.24, change: 1.08, changePct: 6.29 },
 ]
 
 export const watchlist: WatchlistItem[] = [
