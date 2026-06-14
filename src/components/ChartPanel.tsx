@@ -31,6 +31,7 @@ import {
   TIMEFRAMES,
   type Timeframe,
 } from '../utils/chartDataGenerator'
+import { usePortfolio } from '../context/PortfolioContext'
 
 const CANDLE_UP = '#4ade80'
 const CANDLE_DOWN = '#f87171'
@@ -113,6 +114,7 @@ export default function ChartPanel() {
     chartDataBySymbol,
     markersBySymbol,
   } = useMarket()
+  const { optionPositions } = usePortfolio()
 
   const [timeframe, setTimeframe] = useState<Timeframe>('5m')
   const [tool, setTool] = useState<DrawingTool>('cursor')
@@ -156,6 +158,13 @@ export default function ChartPanel() {
   const high = chartData.length ? Math.max(...chartData.map((d) => d.high)) : 0
   const low = chartData.length ? Math.min(...chartData.map((d) => d.low)) : 0
   const volume = chartData.reduce((sum, d) => sum + d.volume, 0)
+  const selectedOptionExposure = useMemo(() => {
+    const positions = optionPositions.filter((p) => p.symbol === selectedSymbol)
+    return {
+      count: positions.reduce((sum, p) => sum + p.quantity, 0),
+      pnl: positions.reduce((sum, p) => sum + p.unrealizedPnL, 0),
+    }
+  }, [optionPositions, selectedSymbol])
 
   const forceRedraw = useCallback(() => setRedrawTick((c) => c + 1), [])
 
@@ -455,6 +464,40 @@ export default function ChartPanel() {
       }
     }
 
+    let optionPnlMarker:
+      | {
+          x: number
+          y: number
+          labelX: number
+          labelY: number
+          pnl: number
+          count: number
+          positive: boolean
+        }
+      | null = null
+    if (selectedOptionExposure.count > 0 && last) {
+      const y = candleSeries.priceToCoordinate(last.close)
+      const x = timeScale.timeToCoordinate(last.time as UTCTimestamp)
+      if (y !== null) {
+        const labelWidth = 118
+        const rawX = (x ?? paneRight - labelWidth - 12) + 12
+        const labelX = Math.min(
+          Math.max(8, rawX),
+          Math.max(8, paneRight - labelWidth - 8),
+        )
+        const labelY = Math.min(Math.max(8, y - 13), Math.max(8, height - 28))
+        optionPnlMarker = {
+          x: x ?? labelX - 8,
+          y,
+          labelX,
+          labelY,
+          pnl: selectedOptionExposure.pnl,
+          count: selectedOptionExposure.count,
+          positive: selectedOptionExposure.pnl >= 0,
+        }
+      }
+    }
+
     return (
       <svg
         className="chart-drawing-overlay"
@@ -520,6 +563,51 @@ export default function ChartPanel() {
             y2={previewLine.y2}
             className="drawing-line drawing-line--preview"
           />
+        )}
+        {optionPnlMarker && (
+          <g className="option-pnl-marker">
+            <line
+              x1={Math.max(0, optionPnlMarker.x - 48)}
+              y1={optionPnlMarker.y}
+              x2={optionPnlMarker.labelX}
+              y2={optionPnlMarker.y}
+              className={
+                optionPnlMarker.positive
+                  ? 'option-pnl-marker__guide option-pnl-marker__guide--positive'
+                  : 'option-pnl-marker__guide option-pnl-marker__guide--negative'
+              }
+            />
+            <rect
+              x={optionPnlMarker.labelX}
+              y={optionPnlMarker.labelY}
+              width={118}
+              height={24}
+              rx={3}
+              className={
+                optionPnlMarker.positive
+                  ? 'option-pnl-marker__box option-pnl-marker__box--positive'
+                  : 'option-pnl-marker__box option-pnl-marker__box--negative'
+              }
+            />
+            <text
+              x={optionPnlMarker.labelX + 8}
+              y={optionPnlMarker.labelY + 15}
+              className="option-pnl-marker__text"
+            >
+              {`${optionPnlMarker.positive ? '+' : '-'}$${Math.abs(optionPnlMarker.pnl).toLocaleString('en-US', {
+                minimumFractionDigits: 2,
+                maximumFractionDigits: 2,
+              })}`}
+            </text>
+            <text
+              x={optionPnlMarker.labelX + 110}
+              y={optionPnlMarker.labelY + 15}
+              textAnchor="end"
+              className="option-pnl-marker__contracts"
+            >
+              {optionPnlMarker.count} OPT
+            </text>
+          </g>
         )}
       </svg>
     )
