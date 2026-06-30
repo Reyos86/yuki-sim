@@ -24,7 +24,10 @@ function formatTime(date: Date): string {
 }
 
 export default function NewsPanel() {
-  const { activeEvents, triggerEvent, triggerRandomEvent } = useMarket()
+  const { activeEvents, recentEvents, currentRegime, triggerEvent, triggerRandomEvent } = useMarket()
+  const completedEvents = recentEvents.filter(
+    (event) => !activeEvents.some((active) => active.instanceId === event.instanceId),
+  )
 
   return (
     <aside className="news-panel panel">
@@ -36,6 +39,7 @@ export default function NewsPanel() {
         </span>
       </div>
 
+      <div className="news-panel__body">
       <div className="news-panel__triggers">
         <button
           type="button"
@@ -58,6 +62,20 @@ export default function NewsPanel() {
         </div>
       </div>
 
+      <div className="market-regime-card">
+        <div className="market-regime-card__head">
+          <span className="news-panel__section-label">Market Regime</span>
+          <span className="market-regime-card__ticks">{currentRegime.remainingTicks} ticks</span>
+        </div>
+        <strong className="market-regime-card__name">{currentRegime.name}</strong>
+        <p className="market-regime-card__description">{currentRegime.description}</p>
+        <div className="market-regime-card__stats">
+          <span>PNS {currentRegime.marketDrift >= 0 ? '+' : ''}{(currentRegime.marketDrift * 10000).toFixed(1)}bp</span>
+          <span>TSQ {currentRegime.tasdaqDrift >= 0 ? '+' : ''}{(currentRegime.tasdaqDrift * 10000).toFixed(1)}bp</span>
+          <span>Vol {currentRegime.volatilityMultiplier.toFixed(2)}x</span>
+        </div>
+      </div>
+
       {activeEvents.length > 0 && (
         <div className="news-panel__active">
           <span className="news-panel__section-label">Active Events</span>
@@ -75,6 +93,9 @@ export default function NewsPanel() {
                     >
                       {event.severity.toUpperCase()}
                     </span>
+                    {event.isFollowUp && (
+                      <span className="follow-up-badge">FOLLOW-UP</span>
+                    )}
                     <span className="active-event__time muted">
                       {formatTime(event.triggeredAt)} ET
                     </span>
@@ -83,6 +104,7 @@ export default function NewsPanel() {
                     </span>
                   </div>
                   <p className="active-event__headline">{event.headline}</p>
+                  <p className="active-event__description">{event.description}</p>
                   {event.affectedSymbols.length > 0 && (
                     <div className="active-event__symbols">
                       {event.affectedSymbols.map((sym) => (
@@ -103,6 +125,28 @@ export default function NewsPanel() {
         </div>
       )}
 
+      {completedEvents.length > 0 && (
+        <div className="news-panel__generated">
+          <span className="news-panel__section-label">Recent Generated News</span>
+          <ul className="generated-event-list">
+            {completedEvents.slice(0, 5).map((event) => (
+              <li key={event.instanceId} className="generated-event">
+                <div className="generated-event__meta">
+                  <span
+                    className="severity-dot"
+                    style={{ background: severityColors[event.severity] }}
+                  />
+                  <span className="generated-event__label">{event.markerLabel}</span>
+                  {event.isFollowUp && <span className="follow-up-badge">FOLLOW-UP</span>}
+                  <span className="generated-event__time muted">{formatTime(event.triggeredAt)} ET</span>
+                </div>
+                <p className="generated-event__headline">{event.headline}</p>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
       <span className="news-panel__section-label news-panel__section-label--feed">News Feed</span>
       <ul className="news-list">
         {newsItems.map((item) => (
@@ -117,6 +161,7 @@ export default function NewsPanel() {
           </li>
         ))}
       </ul>
+      </div>
     </aside>
   )
 }

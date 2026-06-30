@@ -10,8 +10,7 @@ import {
 } from 'react'
 import { indexTickers, watchlist } from '../data/mockMarketData'
 import {
-  eventTemplateById,
-  instantiateEvent,
+  instantiateEventById,
   pickRandomEventId,
   type ActiveNewsEvent,
   type TriggerableEventId,
@@ -31,6 +30,7 @@ import {
   msUntilTick,
   tickFromWallClock,
 } from '../utils/simClock'
+import type { ActiveMarketRegime } from '../data/marketRegimes'
 
 export type UnderlyingKind = 'stock' | 'index'
 
@@ -43,7 +43,6 @@ export interface Underlying {
 }
 
 const DEFAULT_SYMBOL = 'BSLA'
-const MEME_REVERSAL_CHANCE = 0.6
 const DEFAULT_SEED_LABEL = 'yuki'
 
 interface SimBootstrap {
@@ -94,9 +93,12 @@ interface MarketContextValue {
   markersBySymbol: Record<string, ChartEventMarker[]>
   setSelectedSymbol: (symbol: string) => void
   activeEvents: ActiveNewsEvent[]
+  recentEvents: ActiveNewsEvent[]
+  currentRegime: ActiveMarketRegime
   triggerEvent: (eventId: string) => ActiveNewsEvent | null
   triggerRandomEvent: () => ActiveNewsEvent | null
   affectedSymbols: Set<string>
+  heavilyAffectedSymbols: Set<string>
   underlyings: Underlying[]
   getUnderlying: (symbol: string) => Underlying | null
   seed: number
@@ -134,20 +136,6 @@ export function MarketProvider({ children }: { children: ReactNode }) {
           while (next.tickCount < target) {
             next = tickMarket(next)
           }
-          // Meme-reversal is intentionally non-deterministic and local-only —
-          // a user triggering an event doesn't desync the shared market stream
-          // because event impacts feed back into tickMarket via aggregateEventEffects
-          // without consuming additional shared-PRNG calls.
-          const expiring = prev.activeEvents.filter((e) => e.remainingTicks === 1)
-          for (const e of expiring) {
-            if (e.id === 'meme-frenzy' && Math.random() < MEME_REVERSAL_CHANCE) {
-              const reversal = eventTemplateById['meme-reversal']
-              if (reversal) {
-                const instance = instantiateEvent(reversal, next.marketTime, next.tickCount)
-                next = addEventToState(next, instance)
-              }
-            }
-          }
           return next
         })
         schedule()
@@ -162,11 +150,10 @@ export function MarketProvider({ children }: { children: ReactNode }) {
   }, [sessionStart])
 
   const triggerEvent = useCallback((eventId: string): ActiveNewsEvent | null => {
-    const template = eventTemplateById[eventId]
-    if (!template) return null
     let created: ActiveNewsEvent | null = null
     setState((prev) => {
-      const instance = instantiateEvent(template, prev.marketTime, prev.tickCount)
+      const instance = instantiateEventById(eventId, prev.marketTime, prev.tickCount)
+      if (!instance) return prev
       created = instance
       return addEventToState(prev, instance)
     })
@@ -217,6 +204,19 @@ export function MarketProvider({ children }: { children: ReactNode }) {
     return set
   }, [state.activeEvents])
 
+  const heavilyAffectedSymbols = useMemo(() => {
+    const set = new Set<string>()
+    for (const e of state.activeEvents) {
+      for (const [sym, impact] of Object.entries(e.symbolImpacts)) {
+        if (Math.abs(impact) >= 0.006 || e.severity === 'Extreme') set.add(sym)
+      }
+      if (e.severity === 'Extreme') {
+        for (const sym of e.affectedSymbols) set.add(sym)
+      }
+    }
+    return set
+  }, [state.activeEvents])
+
   const shareUrl = useMemo(() => {
     if (typeof window === 'undefined') return ''
     const url = new URL(window.location.href)
@@ -235,9 +235,12 @@ export function MarketProvider({ children }: { children: ReactNode }) {
       markersBySymbol: state.markersBySymbol,
       setSelectedSymbol,
       activeEvents: state.activeEvents,
+      recentEvents: state.recentEvents,
+      currentRegime: state.currentRegime,
       triggerEvent,
       triggerRandomEvent,
       affectedSymbols,
+      heavilyAffectedSymbols,
       underlyings,
       getUnderlying,
       seed,
@@ -253,6 +256,7 @@ export function MarketProvider({ children }: { children: ReactNode }) {
       triggerEvent,
       triggerRandomEvent,
       affectedSymbols,
+      heavilyAffectedSymbols,
       underlyings,
       getUnderlying,
       seed,

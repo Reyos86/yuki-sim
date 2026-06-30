@@ -3,23 +3,16 @@ import {
   CandlestickSeries,
   ColorType,
   createChart,
-  createSeriesMarkers,
   CrosshairMode,
   HistogramSeries,
   LineSeries,
   LineStyle,
   type IChartApi,
   type ISeriesApi,
-  type ISeriesMarkersPluginApi,
   type MouseEventParams,
-  type SeriesMarker,
-  type Time,
   type UTCTimestamp,
 } from 'lightweight-charts'
 import { useMarket } from '../context/MarketContext'
-import type { ChartPoint } from '../data/mockMarketData'
-import { severityColors } from '../data/newsEvents'
-import type { ChartEventMarker } from '../simulation/marketEngine'
 import {
   computeSMA,
   toCandleUpdate,
@@ -70,51 +63,14 @@ function newId(): string {
   return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`
 }
 
-function snapMarkerToCandle(marker: ChartEventMarker, candles: ChartPoint[]): UTCTimestamp | null {
-  if (candles.length === 0) return null
-  const t = marker.triggeredAtTimestamp
-  let nearest = candles[candles.length - 1]
-  let bestDelta = Math.abs(nearest.time - t)
-  for (let i = candles.length - 1; i >= 0; i--) {
-    const d = Math.abs(candles[i].time - t)
-    if (d < bestDelta) {
-      bestDelta = d
-      nearest = candles[i]
-    }
-    if (candles[i].time < t - bestDelta) break
-  }
-  return nearest.time as UTCTimestamp
-}
-
-function toSeriesMarkers(
-  markers: ChartEventMarker[],
-  candles: ChartPoint[],
-): SeriesMarker<Time>[] {
-  const out: SeriesMarker<Time>[] = []
-  for (const m of markers) {
-    const time = snapMarkerToCandle(m, candles)
-    if (time === null) continue
-    out.push({
-      time: time as Time,
-      position: 'aboveBar',
-      shape: 'arrowDown',
-      color: severityColors[m.severity],
-      text: `NEWS · ${m.severity.toUpperCase()}`,
-      id: m.instanceId,
-    })
-  }
-  return out
-}
-
 export default function ChartPanel() {
   const {
     state,
     selectedSymbol,
     selectedName,
     chartDataBySymbol,
-    markersBySymbol,
   } = useMarket()
-  const { optionPositions } = usePortfolio()
+  const { positions, optionPositions } = usePortfolio()
 
   const [timeframe, setTimeframe] = useState<Timeframe>('5m')
   const [tool, setTool] = useState<DrawingTool>('cursor')
@@ -131,7 +87,6 @@ export default function ChartPanel() {
   const volumeSeriesRef = useRef<ISeriesApi<'Histogram'> | null>(null)
   const ma20SeriesRef = useRef<ISeriesApi<'Line'> | null>(null)
   const ma50SeriesRef = useRef<ISeriesApi<'Line'> | null>(null)
-  const markersPluginRef = useRef<ISeriesMarkersPluginApi<Time> | null>(null)
   const initializedRef = useRef(false)
   const prevSymbolRef = useRef(selectedSymbol)
   const prevTimeframeRef = useRef<Timeframe>(timeframe)
@@ -146,7 +101,6 @@ export default function ChartPanel() {
     () => chartDataBySymbol[selectedSymbol]?.[timeframe] ?? [],
     [chartDataBySymbol, selectedSymbol, timeframe],
   )
-  const markers = markersBySymbol[selectedSymbol] ?? []
   const selectedStock = state.stocks.find((s) => s.symbol === selectedSymbol)
 
   const last = chartData[chartData.length - 1]
@@ -158,13 +112,27 @@ export default function ChartPanel() {
   const high = chartData.length ? Math.max(...chartData.map((d) => d.high)) : 0
   const low = chartData.length ? Math.min(...chartData.map((d) => d.low)) : 0
   const volume = chartData.reduce((sum, d) => sum + d.volume, 0)
-  const selectedOptionExposure = useMemo(() => {
-    const positions = optionPositions.filter((p) => p.symbol === selectedSymbol)
+  const selectedPositionExposure = useMemo(() => {
+    const stockPosition = positions.find((p) => p.symbol === selectedSymbol)
+    const optionsForSymbol = optionPositions.filter((p) => p.symbol === selectedSymbol)
+    const stockQuantity = stockPosition?.quantity ?? 0
+    const optionContracts = optionsForSymbol.reduce((sum, p) => sum + p.quantity, 0)
+    const stockPnl = stockPosition?.unrealizedPnL ?? 0
+    const optionPnl = optionsForSymbol.reduce((sum, p) => sum + p.unrealizedPnL, 0)
+
     return {
-      count: positions.reduce((sum, p) => sum + p.quantity, 0),
-      pnl: positions.reduce((sum, p) => sum + p.unrealizedPnL, 0),
+      hasPosition: stockQuantity > 0 || optionContracts > 0,
+      stockQuantity,
+      optionContracts,
+      pnl: stockPnl + optionPnl,
+      label:
+        stockQuantity > 0 && optionContracts > 0
+          ? `${stockQuantity} SH · ${optionContracts} OPT`
+          : stockQuantity > 0
+            ? `${stockQuantity} SH`
+            : `${optionContracts} OPT`,
     }
-  }, [optionPositions, selectedSymbol])
+  }, [positions, optionPositions, selectedSymbol])
 
   const forceRedraw = useCallback(() => setRedrawTick((c) => c + 1), [])
 
@@ -257,14 +225,11 @@ export default function ChartPanel() {
       crosshairMarkerVisible: false,
     })
 
-    const markersPlugin = createSeriesMarkers(candleSeries, [])
-
     chartRef.current = chart
     candleSeriesRef.current = candleSeries
     volumeSeriesRef.current = volumeSeries
     ma20SeriesRef.current = ma20Series
     ma50SeriesRef.current = ma50Series
-    markersPluginRef.current = markersPlugin
     initializedRef.current = false
 
     const resizeObserver = new ResizeObserver((entries) => {
@@ -343,7 +308,6 @@ export default function ChartPanel() {
       volumeSeriesRef.current = null
       ma20SeriesRef.current = null
       ma50SeriesRef.current = null
-      markersPluginRef.current = null
       initializedRef.current = false
     }
   }, [forceRedraw])
@@ -362,11 +326,16 @@ export default function ChartPanel() {
       candleSeries.setData(toCandlestickData(chartData))
       volumeSeries.setData(toVolumeData(chartData))
       const total = chartData.length
-      const visible = Math.min(80, total)
+      const visible = Math.min(70, total)
+      chart.priceScale('right').applyOptions({
+        autoScale: true,
+        scaleMargins: { top: 0.08, bottom: 0.28 },
+      })
       chart.timeScale().setVisibleLogicalRange({
         from: total - visible,
-        to: total + 5,
+        to: total + 4,
       })
+      chart.timeScale().scrollToRealTime()
       initializedRef.current = true
       prevSymbolRef.current = selectedSymbol
       prevTimeframeRef.current = timeframe
@@ -393,13 +362,6 @@ export default function ChartPanel() {
     ma50.applyOptions({ visible: showMA50 })
     if (showMA50) ma50.setData(computeSMA(chartData, 50))
   }, [chartData, showMA50, selectedSymbol, timeframe])
-
-  /* ───── Markers ───── */
-  useEffect(() => {
-    const plugin = markersPluginRef.current
-    if (!plugin) return
-    plugin.setMarkers(toSeriesMarkers(markers, chartData))
-  }, [markers, chartData, selectedSymbol, timeframe])
 
   /* ───── Drawing tool actions ───── */
   const handleSelectTool = useCallback((next: DrawingTool) => {
@@ -464,36 +426,29 @@ export default function ChartPanel() {
       }
     }
 
-    let optionPnlMarker:
+    let positionPnlMarker:
       | {
-          x: number
           y: number
           labelX: number
           labelY: number
           pnl: number
-          count: number
+          label: string
           positive: boolean
         }
       | null = null
-    if (selectedOptionExposure.count > 0 && last) {
+    if (selectedPositionExposure.hasPosition && last) {
       const y = candleSeries.priceToCoordinate(last.close)
-      const x = timeScale.timeToCoordinate(last.time as UTCTimestamp)
       if (y !== null) {
-        const labelWidth = 118
-        const rawX = (x ?? paneRight - labelWidth - 12) + 12
-        const labelX = Math.min(
-          Math.max(8, rawX),
-          Math.max(8, paneRight - labelWidth - 8),
-        )
-        const labelY = Math.min(Math.max(8, y - 13), Math.max(8, height - 28))
-        optionPnlMarker = {
-          x: x ?? labelX - 8,
+        const labelWidth = 136
+        const labelX = Math.max(8, paneRight - labelWidth - 8)
+        const labelY = Math.min(Math.max(8, y - 14), Math.max(8, height - 30))
+        positionPnlMarker = {
           y,
           labelX,
           labelY,
-          pnl: selectedOptionExposure.pnl,
-          count: selectedOptionExposure.count,
-          positive: selectedOptionExposure.pnl >= 0,
+          pnl: selectedPositionExposure.pnl,
+          label: selectedPositionExposure.label,
+          positive: selectedPositionExposure.pnl >= 0,
         }
       }
     }
@@ -564,48 +519,48 @@ export default function ChartPanel() {
             className="drawing-line drawing-line--preview"
           />
         )}
-        {optionPnlMarker && (
+        {positionPnlMarker && (
           <g className="option-pnl-marker">
             <line
-              x1={Math.max(0, optionPnlMarker.x - 48)}
-              y1={optionPnlMarker.y}
-              x2={optionPnlMarker.labelX}
-              y2={optionPnlMarker.y}
+              x1={0}
+              y1={positionPnlMarker.y}
+              x2={positionPnlMarker.labelX}
+              y2={positionPnlMarker.y}
               className={
-                optionPnlMarker.positive
+                positionPnlMarker.positive
                   ? 'option-pnl-marker__guide option-pnl-marker__guide--positive'
                   : 'option-pnl-marker__guide option-pnl-marker__guide--negative'
               }
             />
             <rect
-              x={optionPnlMarker.labelX}
-              y={optionPnlMarker.labelY}
-              width={118}
-              height={24}
+              x={positionPnlMarker.labelX}
+              y={positionPnlMarker.labelY}
+              width={136}
+              height={26}
               rx={3}
               className={
-                optionPnlMarker.positive
+                positionPnlMarker.positive
                   ? 'option-pnl-marker__box option-pnl-marker__box--positive'
                   : 'option-pnl-marker__box option-pnl-marker__box--negative'
               }
             />
             <text
-              x={optionPnlMarker.labelX + 8}
-              y={optionPnlMarker.labelY + 15}
+              x={positionPnlMarker.labelX + 8}
+              y={positionPnlMarker.labelY + 16}
               className="option-pnl-marker__text"
             >
-              {`${optionPnlMarker.positive ? '+' : '-'}$${Math.abs(optionPnlMarker.pnl).toLocaleString('en-US', {
+              {`${positionPnlMarker.positive ? '+' : '-'}$${Math.abs(positionPnlMarker.pnl).toLocaleString('en-US', {
                 minimumFractionDigits: 2,
                 maximumFractionDigits: 2,
               })}`}
             </text>
             <text
-              x={optionPnlMarker.labelX + 110}
-              y={optionPnlMarker.labelY + 15}
+              x={positionPnlMarker.labelX + 128}
+              y={positionPnlMarker.labelY + 16}
               textAnchor="end"
               className="option-pnl-marker__contracts"
             >
-              {optionPnlMarker.count} OPT
+              {positionPnlMarker.label}
             </text>
           </g>
         )}

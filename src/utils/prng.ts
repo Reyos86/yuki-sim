@@ -30,6 +30,22 @@ export function random(): number {
   return ((t ^ (t >>> 14)) >>> 0) / 4_294_967_296
 }
 
+export function randomBetween(min: number, max: number): number {
+  return min + (max - min) * random()
+}
+
+export function randomInt(min: number, max: number): number {
+  return Math.floor(randomBetween(min, max + 1))
+}
+
+export function randomChoice<T>(items: readonly T[]): T {
+  return items[Math.floor(random() * items.length)]
+}
+
+export function randomChance(probability: number): boolean {
+  return random() < probability
+}
+
 /** Box–Muller standard normal using the shared PRNG. */
 export function gaussian(): number {
   const u = 1 - random()

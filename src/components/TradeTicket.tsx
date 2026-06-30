@@ -42,6 +42,7 @@ export default function TradeTicket() {
         <span className="panel__meta">{selectedSymbol}</span>
       </div>
 
+      <div className="trade-ticket__body">
       {isIndex && (
         <div className="trade-ticket__index-banner">
           <strong>{selectedSymbol}</strong> is an index — shares aren't directly tradable.
@@ -122,19 +123,22 @@ export default function TradeTicket() {
           {message.text}
         </p>
       )}
+      </div>
 
-      <button
-        type="button"
-        className={`submit-btn ${side === 'buy' ? 'submit-btn--buy' : 'submit-btn--sell'}`}
-        onClick={handlePlaceOrder}
-        disabled={isIndex}
-      >
-        {isIndex ? 'Index — Trade Options Below' : 'Place Order'}
-      </button>
+      <div className="trade-ticket__footer">
+        <button
+          type="button"
+          className={`submit-btn ${side === 'buy' ? 'submit-btn--buy' : 'submit-btn--sell'}`}
+          onClick={handlePlaceOrder}
+          disabled={isIndex}
+        >
+          {isIndex ? 'Index — Trade Options Below' : 'Place Order'}
+        </button>
 
-      <p className="trade-ticket__disclaimer muted">
-        Simulated orders only. No real execution.
-      </p>
+        <p className="trade-ticket__disclaimer muted">
+          Simulated orders only. No real execution.
+        </p>
+      </div>
     </section>
   )
 }

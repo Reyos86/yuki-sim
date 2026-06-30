@@ -16,7 +16,14 @@ function formatMarketTime(date: Date): string {
   }) + ' ET'
 }
 
-export default function HeaderBar() {
+interface HeaderBarProps {
+  onOpenMenu?: () => void
+  onEndDay?: () => void
+  onResetLayout?: () => void
+  modeName?: string
+}
+
+export default function HeaderBar({ onOpenMenu, onEndDay, onResetLayout, modeName }: HeaderBarProps) {
   const { state, seedLabel, shareUrl } = useMarket()
   const [copied, setCopied] = useState(false)
 
@@ -48,6 +55,27 @@ export default function HeaderBar() {
           <span className="status-dot" />
           Market Open
         </span>
+        {modeName && <span className="badge badge--mode">{modeName}</span>}
+        {onOpenMenu && (
+          <button type="button" className="header-menu-btn" onClick={onOpenMenu}>
+            Menu
+          </button>
+        )}
+        {onEndDay && (
+          <button type="button" className="header-end-day-btn" onClick={onEndDay}>
+            End Day
+          </button>
+        )}
+        {onResetLayout && (
+          <button
+            type="button"
+            className="header-menu-btn"
+            onClick={onResetLayout}
+            title="Reset all panel sizes to default"
+          >
+            Reset Layout
+          </button>
+        )}
         <button
           type="button"
           className={`seed-pill ${copied ? 'seed-pill--copied' : ''}`}

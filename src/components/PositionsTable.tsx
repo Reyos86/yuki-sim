@@ -1,15 +1,19 @@
 import { useState } from 'react'
 import { usePortfolio } from '../context/PortfolioContext'
 import { SHARES_PER_CONTRACT } from '../portfolio/portfolioEngine'
+import TradeHistory from './TradeHistory'
 
 function formatMoney(value: number) {
   const sign = value >= 0 ? '+' : ''
   return `${sign}$${Math.abs(value).toLocaleString('en-US', { minimumFractionDigits: 2 })}`
 }
 
+type Tab = 'positions' | 'history'
+
 export default function PositionsTable() {
-  const { positions, optionPositions, closeOption } = usePortfolio()
+  const { positions, optionPositions, closeOption, trades } = usePortfolio()
   const [message, setMessage] = useState<{ text: string; type: 'success' | 'error' } | null>(null)
+  const [tab, setTab] = useState<Tab>('positions')
 
   const totalCount = positions.length + optionPositions.length
 
@@ -21,17 +25,34 @@ export default function PositionsTable() {
 
   return (
     <section className="positions-table panel">
-      <div className="panel__header">
-        <h2 className="panel__title">Open Positions</h2>
-        <span className="panel__meta">
-          {totalCount} {totalCount === 1 ? 'position' : 'positions'}
-        </span>
+      <div className="panel__header positions-table__header">
+        <div className="positions-table__tabs">
+          <button
+            type="button"
+            className={`positions-tab ${tab === 'positions' ? 'positions-tab--active' : ''}`}
+            onClick={() => setTab('positions')}
+          >
+            Open Positions{totalCount > 0 ? ` (${totalCount})` : ''}
+          </button>
+          <button
+            type="button"
+            className={`positions-tab ${tab === 'history' ? 'positions-tab--active' : ''}`}
+            onClick={() => setTab('history')}
+          >
+            History{trades.length > 0 ? ` (${trades.length})` : ''}
+          </button>
+        </div>
       </div>
       {message && (
         <p className={`positions-table__message positions-table__message--${message.type}`}>
           {message.text}
         </p>
       )}
+      {tab === 'history' ? (
+        <div className="positions-table__wrap">
+          <TradeHistory trades={trades} />
+        </div>
+      ) : (
       <div className="positions-table__wrap">
         {totalCount === 0 ? (
           <p className="positions-table__empty muted">No open positions yet.</p>
@@ -136,7 +157,8 @@ export default function PositionsTable() {
           </table>
         )}
       </div>
-      {optionPositions.length > 0 && (
+      )}
+      {tab === 'positions' && optionPositions.length > 0 && (
         <p className="positions-table__footnote muted">
           Each option contract controls {SHARES_PER_CONTRACT} shares of the underlying.
         </p>

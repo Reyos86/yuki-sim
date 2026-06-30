@@ -1,7 +1,16 @@
 import type { AssetPersonality, Sector } from '../data/assetPersonalities'
 import { personalityBySymbol } from '../data/assetPersonalities'
 import type { ChartPoint, IndexTicker, WatchlistItem } from '../data/mockMarketData'
-import type { ActiveNewsEvent, EventSeverity } from '../data/newsEvents'
+import {
+  chooseFollowUpOption,
+  instantiateEventById,
+  type ActiveNewsEvent,
+  type EventSeverity,
+} from '../data/newsEvents'
+import {
+  instantiateRandomRegime,
+  type ActiveMarketRegime,
+} from '../data/marketRegimes'
 import {
   appendCandleIfDue,
   generateAllTimeframeData,
@@ -10,7 +19,12 @@ import {
   updateLastCandle,
   type Timeframe,
 } from '../utils/chartDataGenerator'
-import { gaussian, random as prngRandom } from '../utils/prng'
+import {
+  gaussian,
+  random as prngRandom,
+  randomChance,
+  randomChoice,
+} from '../utils/prng'
 
 export interface SimulatedStock {
   symbol: string
@@ -28,6 +42,7 @@ export interface ChartEventMarker {
   eventId: string
   headline: string
   severity: EventSeverity
+  markerLabel: string
   /** Unix seconds at which the event fired. */
   triggeredAtTimestamp: number
   triggeredAt: Date
@@ -41,7 +56,10 @@ export interface MarketState {
   chartDataBySymbol: ChartDataBySymbol
   marketTime: Date
   tickCount: number
+  currentRegime: ActiveMarketRegime
   activeEvents: ActiveNewsEvent[]
+  recentEvents: ActiveNewsEvent[]
+  nextAutoEventTick: number
   markersBySymbol: Record<string, ChartEventMarker[]>
 }
 
@@ -62,10 +80,10 @@ const SECTOR_INDEX_MAP: Partial<Record<Sector, 'TSQ' | 'PNS'>> = {
 }
 
 const SEVERITY_VOL_MULTIPLIER: Record<EventSeverity, number> = {
-  Low: 1.4,
-  Medium: 1.8,
-  High: 2.4,
-  Extreme: 3.2,
+  Low: 1.08,
+  Medium: 1.18,
+  High: 1.38,
+  Extreme: 1.72,
 }
 
 const INDEX_CHART_VOLATILITY: Record<string, number> = {
@@ -77,6 +95,23 @@ const INDEX_CHART_VOLATILITY: Record<string, number> = {
 const INDEX_VOLUME_BASE = 5_000_000
 
 const MAX_MARKERS_PER_SYMBOL = 8
+const MAX_RECENT_EVENTS = 12
+const AUTO_EVENT_COOLDOWN_MIN_TICKS = 150
+const AUTO_EVENT_COOLDOWN_MAX_TICKS = 300
+const AUTO_EVENT_CHANCE = 0.42
+const EVENT_MARKET_EFFECT_SCALE = 0.45
+const EVENT_SECTOR_EFFECT_SCALE = 0.6
+const EVENT_SYMBOL_EFFECT_SCALE = 0.78
+const EVENT_VOL_EFFECT_SCALE = 0.5
+const EVENT_VEX_SEVERITY_SCALE = 0.35
+const AUTO_EVENT_IDS = [
+  'conflict-shock',
+  'besla-battery',
+  'inflation-shock',
+  'ai-chip-boom',
+  'energy-shock',
+  'meme-frenzy',
+] as const
 
 function clamp(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, value))
@@ -118,6 +153,7 @@ interface EventDrifts {
   sectorDrift: Partial<Record<Sector, number>>
   symbolDrift: Record<string, number>
   maxVolatilityMultiplier: number
+  highSeverityCount: number
 }
 
 function aggregateEventEffects(events: ActiveNewsEvent[]): EventDrifts {
@@ -127,26 +163,32 @@ function aggregateEventEffects(events: ActiveNewsEvent[]): EventDrifts {
     sectorDrift: {},
     symbolDrift: {},
     maxVolatilityMultiplier: 1,
+    highSeverityCount: 0,
   }
 
   for (const e of events) {
     const progress = 1 - e.remainingTicks / e.durationTicks
     const decay = 1 - Math.pow(progress, 2) * 0.55
 
-    result.marketDrift += e.marketImpact * decay
-    result.volatilityDrift += e.volatilityImpact * decay
+    result.marketDrift += e.marketImpact * decay * EVENT_MARKET_EFFECT_SCALE
+    result.volatilityDrift += e.volatilityImpact * decay * EVENT_VOL_EFFECT_SCALE
 
     for (const [sec, imp] of Object.entries(e.sectorImpacts) as Array<[Sector, number]>) {
-      result.sectorDrift[sec] = (result.sectorDrift[sec] ?? 0) + imp * decay
+      result.sectorDrift[sec] =
+        (result.sectorDrift[sec] ?? 0) + imp * decay * EVENT_SECTOR_EFFECT_SCALE
     }
 
     for (const [sym, imp] of Object.entries(e.symbolImpacts)) {
-      result.symbolDrift[sym] = (result.symbolDrift[sym] ?? 0) + imp * decay
+      result.symbolDrift[sym] =
+        (result.symbolDrift[sym] ?? 0) + imp * decay * EVENT_SYMBOL_EFFECT_SCALE
     }
 
     const mult = SEVERITY_VOL_MULTIPLIER[e.severity]
     if (mult > result.maxVolatilityMultiplier) {
       result.maxVolatilityMultiplier = mult
+    }
+    if (e.severity === 'High' || e.severity === 'Extreme') {
+      result.highSeverityCount += 1
     }
   }
 
@@ -159,6 +201,7 @@ function computeStockMove(
   sectorRet: number,
   volatilityMultiplier: number,
   symbolDrift: number,
+  regimeSymbolBias: number,
 ): number {
   const idio = gaussian() * personality.volatility * 0.004 * volatilityMultiplier
   const eventDrift = symbolDrift * personality.newsSensitivity
@@ -166,6 +209,7 @@ function computeStockMove(
   return (
     personality.marketSensitivity * marketReturn +
     personality.sectorSensitivity * sectorRet +
+    regimeSymbolBias +
     idio +
     eventDrift
   )
@@ -191,10 +235,42 @@ function advanceMarketTime(current: Date): Date {
   return new Date(current.getTime() + 2_000)
 }
 
-function decrementEvents(events: ActiveNewsEvent[]): ActiveNewsEvent[] {
-  return events
-    .map((e) => ({ ...e, remainingTicks: e.remainingTicks - 1 }))
-    .filter((e) => e.remainingTicks > 0)
+function advanceRegime(regime: ActiveMarketRegime, tickIndex: number): ActiveMarketRegime {
+  if (regime.remainingTicks > 1) {
+    return { ...regime, remainingTicks: regime.remainingTicks - 1 }
+  }
+  return instantiateRandomRegime(tickIndex)
+}
+
+function maybeCreateFollowUps(
+  expiredEvents: ActiveNewsEvent[],
+  marketTime: Date,
+  tickIndex: number,
+): ActiveNewsEvent[] {
+  const followUps: ActiveNewsEvent[] = []
+  for (const event of expiredEvents) {
+    const followUp = chooseFollowUpOption(event)
+    if (!followUp) continue
+    const instance = instantiateEventById(followUp.templateId, marketTime, tickIndex, event)
+    if (instance) followUps.push(instance)
+  }
+  return followUps
+}
+
+function maybeCreateBackgroundEvent(
+  activeEvents: ActiveNewsEvent[],
+  marketTime: Date,
+  tickIndex: number,
+  nextAutoEventTick: number,
+): ActiveNewsEvent | null {
+  if (tickIndex < nextAutoEventTick) return null
+  if (activeEvents.length >= 3) return null
+  if (!randomChance(AUTO_EVENT_CHANCE)) return null
+  return instantiateEventById(randomChoice(AUTO_EVENT_IDS), marketTime, tickIndex)
+}
+
+function nextAutoEventTickAfter(tickIndex: number): number {
+  return tickIndex + Math.floor(AUTO_EVENT_COOLDOWN_MIN_TICKS + prngRandom() * (AUTO_EVENT_COOLDOWN_MAX_TICKS - AUTO_EVENT_COOLDOWN_MIN_TICKS + 1))
 }
 
 function updateSymbolTimeframes(
@@ -224,13 +300,18 @@ export function tickMarket(state: MarketState): MarketState {
   const vexOpen = vex.value - vex.change
 
   const drifts = aggregateEventEffects(state.activeEvents)
-  const volMult = drifts.maxVolatilityMultiplier
+  const regime = state.currentRegime
+  const volMult = drifts.maxVolatilityMultiplier * regime.volatilityMultiplier
 
   const pnsMove =
-    gaussian() * 0.00035 * volMult + 0.00005 + drifts.marketDrift
+    gaussian() * 0.00035 * volMult +
+    0.00003 +
+    regime.marketDrift +
+    drifts.marketDrift
   const tsqMove =
     pnsMove * 0.65 +
     gaussian() * 0.00045 * volMult +
+    regime.tasdaqDrift +
     (drifts.sectorDrift.tech ?? 0) * 0.4
 
   const marketReturn = (pnsMove + tsqMove) / 2
@@ -243,6 +324,8 @@ export function tickMarket(state: MarketState): MarketState {
   const vexMove =
     -avgIndexMove * 2.8 +
     gaussian() * 0.0012 * volMult +
+    regime.vexDrift +
+    drifts.highSeverityCount * 0.0008 * EVENT_VEX_SEVERITY_SCALE +
     drifts.volatilityDrift +
     (prngRandom() < 0.15 ? gaussian() * 0.004 : 0)
 
@@ -258,15 +341,18 @@ export function tickMarket(state: MarketState): MarketState {
     if (!personality) return { ...stock, lastTickDelta: 0 }
 
     const baseSectorRet = sectorReturn(personality.sector, indexReturns)
+    const regimeSectorBias = regime.sectorBiases[personality.sector] ?? 0
+    const regimeSymbolBias = regime.symbolBiases[stock.symbol] ?? 0
     const sectorEventDrift = drifts.sectorDrift[personality.sector] ?? 0
     const symbolDrift = drifts.symbolDrift[stock.symbol] ?? 0
 
     const pctMove = computeStockMove(
       personality,
       marketReturn,
-      baseSectorRet + sectorEventDrift,
+      baseSectorRet + regimeSectorBias + sectorEventDrift,
       volMult,
       symbolDrift,
+      regimeSymbolBias,
     )
 
     return updateStock(stock, pctMove)
@@ -301,15 +387,41 @@ export function tickMarket(state: MarketState): MarketState {
     )
   }
 
-  return {
+  const decrementedEvents = state.activeEvents.map((e) => ({
+    ...e,
+    remainingTicks: e.remainingTicks - 1,
+  }))
+  const expiredEvents = decrementedEvents.filter((e) => e.remainingTicks <= 0)
+  const stillActiveEvents = decrementedEvents.filter((e) => e.remainingTicks > 0)
+  const followUps = maybeCreateFollowUps(expiredEvents, nextMarketTime, state.tickCount + 1)
+  const backgroundEvent = maybeCreateBackgroundEvent(
+    [...stillActiveEvents, ...followUps],
+    nextMarketTime,
+    state.tickCount + 1,
+    state.nextAutoEventTick,
+  )
+
+  let nextState: MarketState = {
     indices: newIndices,
     stocks: newStocks,
     chartDataBySymbol: newChartDataBySymbol,
     marketTime: nextMarketTime,
     tickCount: state.tickCount + 1,
-    activeEvents: decrementEvents(state.activeEvents),
+    currentRegime: advanceRegime(state.currentRegime, state.tickCount + 1),
+    activeEvents: stillActiveEvents,
+    recentEvents: state.recentEvents,
+    nextAutoEventTick: backgroundEvent
+      ? nextAutoEventTickAfter(state.tickCount + 1)
+      : state.nextAutoEventTick,
     markersBySymbol: state.markersBySymbol,
   }
+  if (backgroundEvent) {
+    nextState = addEventToState(nextState, backgroundEvent)
+  }
+  for (const followUp of followUps) {
+    nextState = addEventToState(nextState, followUp)
+  }
+  return nextState
 }
 
 export function stockToWatchlistItem(stock: SimulatedStock): WatchlistItem {
@@ -367,7 +479,10 @@ export function createInitialMarketState(
     chartDataBySymbol,
     marketTime: startTime,
     tickCount: 0,
+    currentRegime: instantiateRandomRegime(0),
     activeEvents: [],
+    recentEvents: [],
+    nextAutoEventTick: nextAutoEventTickAfter(0),
     markersBySymbol: {},
   }
 }
@@ -390,6 +505,7 @@ export function addEventToState(
       eventId: event.id,
       headline: event.headline,
       severity: event.severity,
+      markerLabel: event.markerLabel,
       triggeredAtTimestamp,
       triggeredAt: new Date(event.triggeredAt.getTime()),
     }
@@ -399,6 +515,8 @@ export function addEventToState(
   return {
     ...state,
     activeEvents: [...state.activeEvents, event],
+    recentEvents: [event, ...state.recentEvents.filter((e) => e.instanceId !== event.instanceId)]
+      .slice(0, MAX_RECENT_EVENTS),
     markersBySymbol,
   }
 }

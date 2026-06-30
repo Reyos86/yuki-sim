@@ -38,6 +38,36 @@ export interface OptionPosition {
   dayPnL: number
 }
 
+export type TradeInstrument = 'stock' | 'option'
+export type TradeAction = 'Buy' | 'Sell' | 'Buy to Open' | 'Sell to Close'
+
+/** Essentials of an executed fill, produced by the engine. */
+export interface TradeFill {
+  instrument: TradeInstrument
+  action: TradeAction
+  symbol: string
+  name: string
+  optionType?: 'Call' | 'Put'
+  strike?: number
+  expiry?: string
+  /** Shares (stock) or contracts (option). */
+  quantity: number
+  /** Per share, or per-share option premium. */
+  price: number
+  /** Gross cash flow magnitude of the fill. */
+  value: number
+  /** Present on closing fills (stock sell / option close). */
+  realizedPnL?: number
+}
+
+/** A persisted trade-blotter entry: a fill enriched with time + market context. */
+export interface Trade extends TradeFill {
+  id: string
+  timestamp: number
+  regime?: string
+  eventLabel?: string
+}
+
 export interface Portfolio {
   cash: number
   buyingPower: number
@@ -47,6 +77,8 @@ export interface Portfolio {
   totalAccountValue: number
   dayPnL: number
   sessionStartValue: number
+  sessionStartedAt: number
+  trades: Trade[]
 }
 
 export type OrderSide = 'buy' | 'sell'
@@ -55,16 +87,46 @@ export type OrderResult =
   | { success: true; message: string }
   | { success: false; message: string }
 
-export function createInitialPortfolio(): Portfolio {
+export interface TradeStat {
+  label: string
+  pnl: number
+}
+
+export interface EndOfDayReport {
+  generatedAt: Date
+  startingValue: number
+  endingValue: number
+  dayPnL: number
+  dayPnLPercent: number
+  cash: number
+  buyingPower: number
+  realizedPnL: number
+  unrealizedPnL: number
+  stockPositions: number
+  optionPositions: number
+  grade: string
+  tradeCount: number
+  closedCount: number
+  wins: number
+  losses: number
+  winRate: number
+  sessionRealized: number
+  bestTrade: TradeStat | null
+  worstTrade: TradeStat | null
+}
+
+export function createInitialPortfolio(startingCash = STARTING_CASH): Portfolio {
   return {
-    cash: STARTING_CASH,
-    buyingPower: STARTING_CASH,
+    cash: startingCash,
+    buyingPower: startingCash,
     positions: [],
     optionPositions: [],
     realizedPnL: 0,
-    totalAccountValue: STARTING_CASH,
+    totalAccountValue: startingCash,
     dayPnL: 0,
-    sessionStartValue: STARTING_CASH,
+    sessionStartValue: startingCash,
+    sessionStartedAt: Date.now(),
+    trades: [],
   }
 }
 
@@ -143,7 +205,7 @@ export function executeBuy(
   stocks: MarketStock[],
   symbol: string,
   quantity: number,
-): { portfolio: Portfolio; result: OrderResult } {
+): { portfolio: Portfolio; result: OrderResult; fill?: TradeFill } {
   if (quantity <= 0 || !Number.isFinite(quantity)) {
     return { portfolio, result: { success: false, message: 'Enter a valid quantity.' } }
   }
@@ -202,6 +264,15 @@ export function executeBuy(
       success: true,
       message: `Bought ${quantity} ${symbol} @ $${price.toFixed(2)}`,
     },
+    fill: {
+      instrument: 'stock',
+      action: 'Buy',
+      symbol,
+      name: stock.name,
+      quantity,
+      price,
+      value: cost,
+    },
   }
 }
 
@@ -210,7 +281,7 @@ export function executeSell(
   stocks: MarketStock[],
   symbol: string,
   quantity: number,
-): { portfolio: Portfolio; result: OrderResult } {
+): { portfolio: Portfolio; result: OrderResult; fill?: TradeFill } {
   if (quantity <= 0 || !Number.isFinite(quantity)) {
     return { portfolio, result: { success: false, message: 'Enter a valid quantity.' } }
   }
@@ -251,6 +322,16 @@ export function executeSell(
       success: true,
       message: `Sold ${quantity} ${symbol} @ $${price.toFixed(2)}`,
     },
+    fill: {
+      instrument: 'stock',
+      action: 'Sell',
+      symbol,
+      name: existing.name,
+      quantity,
+      price,
+      value: proceeds,
+      realizedPnL: realized,
+    },
   }
 }
 
@@ -267,7 +348,7 @@ export function executeOptionBuy(
   portfolio: Portfolio,
   stocks: MarketStock[],
   order: OptionOrderInput,
-): { portfolio: Portfolio; result: OrderResult } {
+): { portfolio: Portfolio; result: OrderResult; fill?: TradeFill } {
   const { symbol, name, type, strike, expiry, quantity } = order
   if (quantity <= 0 || !Number.isFinite(quantity)) {
     return { portfolio, result: { success: false, message: 'Enter a valid contract count.' } }
@@ -315,6 +396,18 @@ export function executeOptionBuy(
       success: true,
       message: `Bought ${quantity}x ${symbol} ${strike} ${type} @ $${ask.toFixed(2)}`,
     },
+    fill: {
+      instrument: 'option',
+      action: 'Buy to Open',
+      symbol,
+      name,
+      optionType: type,
+      strike,
+      expiry,
+      quantity,
+      price: ask,
+      value: cost,
+    },
   }
 }
 
@@ -323,7 +416,7 @@ export function executeOptionClose(
   stocks: MarketStock[],
   positionId: string,
   quantity?: number,
-): { portfolio: Portfolio; result: OrderResult } {
+): { portfolio: Portfolio; result: OrderResult; fill?: TradeFill } {
   const existing = portfolio.optionPositions.find((p) => p.id === positionId)
   if (!existing) {
     return { portfolio, result: { success: false, message: 'Position not found.' } }
@@ -365,5 +458,92 @@ export function executeOptionClose(
       success: true,
       message: `Closed ${closeQty}x ${existing.symbol} ${existing.strike} ${existing.type} @ $${bid.toFixed(2)}`,
     },
+    fill: {
+      instrument: 'option',
+      action: 'Sell to Close',
+      symbol: existing.symbol,
+      name: existing.name,
+      optionType: existing.type,
+      strike: existing.strike,
+      expiry: existing.expiry,
+      quantity: closeQty,
+      price: bid,
+      value: proceeds,
+      realizedPnL: realized,
+    },
+  }
+}
+
+function gradeDay(dayPnLPercent: number): string {
+  if (dayPnLPercent >= 5) return 'S'
+  if (dayPnLPercent >= 2) return 'A'
+  if (dayPnLPercent >= 0.5) return 'B'
+  if (dayPnLPercent >= -0.5) return 'C'
+  if (dayPnLPercent >= -2) return 'D'
+  return 'F'
+}
+
+export function tradeLabel(trade: TradeFill): string {
+  if (trade.instrument === 'option') {
+    return `${trade.symbol} ${trade.strike} ${trade.optionType}`
+  }
+  return trade.symbol
+}
+
+export function createEndOfDayReport(portfolio: Portfolio): EndOfDayReport {
+  const unrealizedPnL =
+    portfolio.positions.reduce((sum, p) => sum + p.unrealizedPnL, 0) +
+    portfolio.optionPositions.reduce((sum, p) => sum + p.unrealizedPnL, 0)
+  const dayPnL = portfolio.totalAccountValue - portfolio.sessionStartValue
+  const dayPnLPercent =
+    portfolio.sessionStartValue > 0 ? (dayPnL / portfolio.sessionStartValue) * 100 : 0
+
+  const sessionTrades = portfolio.trades.filter(
+    (t) => t.timestamp >= portfolio.sessionStartedAt,
+  )
+  const closed = sessionTrades.filter((t) => typeof t.realizedPnL === 'number')
+  const wins = closed.filter((t) => (t.realizedPnL as number) > 0)
+  const losses = closed.filter((t) => (t.realizedPnL as number) < 0)
+  const winRate = closed.length > 0 ? (wins.length / closed.length) * 100 : 0
+  const sessionRealized = closed.reduce((sum, t) => sum + (t.realizedPnL ?? 0), 0)
+
+  let bestTrade: TradeStat | null = null
+  let worstTrade: TradeStat | null = null
+  for (const t of closed) {
+    const pnl = t.realizedPnL as number
+    if (!bestTrade || pnl > bestTrade.pnl) bestTrade = { label: tradeLabel(t), pnl }
+    if (!worstTrade || pnl < worstTrade.pnl) worstTrade = { label: tradeLabel(t), pnl }
+  }
+
+  return {
+    generatedAt: new Date(),
+    startingValue: portfolio.sessionStartValue,
+    endingValue: portfolio.totalAccountValue,
+    dayPnL,
+    dayPnLPercent,
+    cash: portfolio.cash,
+    buyingPower: portfolio.buyingPower,
+    realizedPnL: portfolio.realizedPnL,
+    unrealizedPnL,
+    stockPositions: portfolio.positions.length,
+    optionPositions: portfolio.optionPositions.length,
+    grade: gradeDay(dayPnLPercent),
+    tradeCount: sessionTrades.length,
+    closedCount: closed.length,
+    wins: wins.length,
+    losses: losses.length,
+    winRate,
+    sessionRealized,
+    bestTrade,
+    worstTrade,
+  }
+}
+
+export function rollPortfolioSession(portfolio: Portfolio): Portfolio {
+  return {
+    ...portfolio,
+    sessionStartValue: portfolio.totalAccountValue,
+    sessionStartedAt: Date.now(),
+    dayPnL: 0,
   }
 }

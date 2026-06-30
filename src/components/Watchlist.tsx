@@ -1,11 +1,46 @@
+import { useMemo, useState } from 'react'
 import { useMarket } from '../context/MarketContext'
+
+type SortKey = 'last' | 'chg'
+type SortDirection = 'asc' | 'desc'
 
 function formatIndexValue(v: number): string {
   return v.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
 }
 
 export default function Watchlist() {
-  const { watchlist, state, selectedSymbol, setSelectedSymbol, affectedSymbols } = useMarket()
+  const {
+    watchlist,
+    state,
+    selectedSymbol,
+    setSelectedSymbol,
+    affectedSymbols,
+    heavilyAffectedSymbols,
+  } = useMarket()
+  const [sortKey, setSortKey] = useState<SortKey>('chg')
+  const [sortDirection, setSortDirection] = useState<SortDirection>('desc')
+
+  const sortedWatchlist = useMemo(() => {
+    return [...watchlist].sort((a, b) => {
+      const aValue = sortKey === 'last' ? a.price : a.changePct
+      const bValue = sortKey === 'last' ? b.price : b.changePct
+      return sortDirection === 'asc' ? aValue - bValue : bValue - aValue
+    })
+  }, [watchlist, sortKey, sortDirection])
+
+  function toggleSort(key: SortKey) {
+    if (sortKey === key) {
+      setSortDirection((d) => d === 'asc' ? 'desc' : 'asc')
+      return
+    }
+    setSortKey(key)
+    setSortDirection('desc')
+  }
+
+  function sortArrow(key: SortKey): string {
+    if (sortKey !== key) return '↕'
+    return sortDirection === 'asc' ? '↑' : '↓'
+  }
 
   return (
     <aside className="watchlist panel">
@@ -74,19 +109,36 @@ export default function Watchlist() {
             </tr>
             <tr>
               <th>Symbol</th>
-              <th className="align-right">Last</th>
-              <th className="align-right">Chg</th>
+              <th className="align-right">
+                <button
+                  type="button"
+                  className={`watchlist-sort-btn ${sortKey === 'last' ? 'watchlist-sort-btn--active' : ''}`}
+                  onClick={() => toggleSort('last')}
+                >
+                  Last <span>{sortArrow('last')}</span>
+                </button>
+              </th>
+              <th className="align-right">
+                <button
+                  type="button"
+                  className={`watchlist-sort-btn ${sortKey === 'chg' ? 'watchlist-sort-btn--active' : ''}`}
+                  onClick={() => toggleSort('chg')}
+                >
+                  Chg <span>{sortArrow('chg')}</span>
+                </button>
+              </th>
               <th className="align-right">Vol</th>
             </tr>
           </thead>
           <tbody>
-            {watchlist.map((item) => {
+            {sortedWatchlist.map((item) => {
               const positive = item.change >= 0
               const isSelected = item.symbol === selectedSymbol
               const stock = state.stocks.find((s) => s.symbol === item.symbol)
               const tickUp = (stock?.lastTickDelta ?? 0) > 0
               const tickDown = (stock?.lastTickDelta ?? 0) < 0
               const hasNews = affectedSymbols.has(item.symbol)
+              const hasHeavyNews = heavilyAffectedSymbols.has(item.symbol)
               return (
                 <tr
                   key={`${item.symbol}-${state.tickCount}`}
@@ -95,6 +147,7 @@ export default function Watchlist() {
                     tickUp ? 'row--tick-up' : '',
                     tickDown ? 'row--tick-down' : '',
                     hasNews ? 'row--news' : '',
+                    hasHeavyNews ? 'row--news-heavy' : '',
                   ].filter(Boolean).join(' ')}
                   onClick={() => setSelectedSymbol(item.symbol)}
                   onKeyDown={(e) => {
@@ -112,7 +165,14 @@ export default function Watchlist() {
                     <div className="symbol-cell">
                       <span className="symbol-cell__ticker">
                         {item.symbol}
-                        {hasNews && <span className="news-pill" title="Active news event">NEWS</span>}
+                        {hasNews && (
+                          <span
+                            className={`news-pill ${hasHeavyNews ? 'news-pill--heavy' : ''}`}
+                            title={hasHeavyNews ? 'High-impact active event' : 'Active news event'}
+                          >
+                            {hasHeavyNews ? 'HOT' : 'NEWS'}
+                          </span>
+                        )}
                       </span>
                       <span className="symbol-cell__name">{item.name}</span>
                     </div>
